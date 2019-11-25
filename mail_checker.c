@@ -10,9 +10,11 @@
 #include <arpa/inet.h>	//inet_addr , inet_ntoa , ntohs etc
 #include <netinet/in.h>
 #include <unistd.h>	//getpid
+#include <ctype.h>
 
 #define A 1 //IPv4
 #define MX 15 // mail 
+int stop = 0;
 
 //List of DNS Servers registered on the system
 char dns_servers[10][100];
@@ -20,10 +22,11 @@ int dns_server_count = 0;
 //Types of DNS resource records :)
 
 //Function Prototypes
-void ngethostbyname (unsigned char* , int);
+unsigned char* ngethostbyname (unsigned char* , int);
 void ChangetoDnsNameFormat (unsigned char*,unsigned char*);
 unsigned char* ReadName (unsigned char*,unsigned char*,int*);
 void get_dns_servers();
+void StartTelnet(unsigned char*);
 
 //DNS header structure
 struct DNS_HEADER
@@ -63,47 +66,47 @@ struct DNS_ANSWER
 	unsigned char *rdata;
 };
 
+#pragma pack(push, 1)
 struct R_DATA
 {
 	unsigned short type;
 	unsigned short _class;
 	unsigned int ttl;
 	unsigned short data_len;
-	unsigned int preference;
 };
+#pragma pack(pop)
 
 // Main
 int main( int argc , char *argv[])
 {
 	unsigned char hostname[100];
 	unsigned char query_type[10];
+	unsigned char* dns_response_email;
 
-	//Get the DNS servers from the resolv.conf file
 	get_dns_servers();
 	
-	//Get the hostname from the terminal
 	printf("Enter Hostname to Lookup : ");
 	scanf("%sockfd" , hostname);
 
 	ngethostbyname(hostname, MX);
-	
+
+	// ngethostbyname(dns_response_email, A);
+
 	return 0;
 }
 
 /*
  * Perform a DNS query by sending a packet
  * */
-void ngethostbyname(unsigned char *host , int query_type)
+unsigned char* ngethostbyname(unsigned char *host , int query_type)
 {
 	unsigned char buf[65536];
 	unsigned char *qname;
 	unsigned char *reader;
 
 	int sockfd;
-	int j;
-	int stop = 0;
 
-	struct DNS_ANSWER answers[20];//the replies from the DNS server
+	struct DNS_ANSWER answers[20]; //the replies from the DNS server
 	struct sockaddr_in dest;
 	struct DNS_HEADER *dns_header = NULL;
 	struct DNS_QUESTION *dns_question = NULL;
@@ -137,7 +140,7 @@ void ngethostbyname(unsigned char *host , int query_type)
 	//point to the query portion
 	qname =(unsigned char*)&buf[sizeof(struct DNS_HEADER)];
 	
-	ChangetoDnsNameFormat(qname , host);
+	ChangetoDnsNameFormat(qname, host);
 
 	dns_question =(struct DNS_QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; //fill it
 	dns_question->qtype = htons(query_type); 
@@ -155,37 +158,65 @@ void ngethostbyname(unsigned char *host , int query_type)
 
 	dns_header = (struct DNS_HEADER*) buf;
 
-	//move ahead of the dns_header header and the query field
-	reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)+1) + sizeof(struct DNS_QUESTION)];
+	reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)) + sizeof(struct DNS_QUESTION)];
 
-	for(dest_size = 0; dest_size < ntohs(dns_header->ans_count); dest_size++)
+	answers[0].name=ReadName(reader,buf,&stop);
+	reader = reader + stop;
+
+	answers[0].resource = (struct R_DATA*)(reader);
+	reader = reader + sizeof(struct R_DATA);
+
+
+	// debug reader, values are not copied to rdata from buffer, check ehy, find cause
+	answers[0].rdata = (unsigned char*)malloc(ntohs(answers[0].resource->data_len));
+
+	if (query_type == MX)
 	{
-		answers[dest_size].name = ReadName(reader,buf,&stop);
+		answers[0].rdata = ReadName(reader,buf,&stop);
 		reader = reader + stop;
 
-		answers[dest_size].resource = (struct R_DATA*)(reader);
-		reader = reader + sizeof(struct R_DATA);
+		printf("Mail server: %s\n", answers[0].rdata);
 
-		answers[dest_size].rdata = ReadName(reader,buf,&stop);
-		reader = reader + stop;
+	    close(sockfd);
+		free(answers[0].name);
+
+		return answers[0].rdata;
+		// StartTelnet(server_address);
 	}
 
-	unsigned int buf2[65536];
-    printf("%d\n", ntohs(answers[0].resource->preference = *buf2));
-	printf("%d\n", ntohs(answers[2].resource->preference = *buf2));
+	else if(query_type == A)
+	{
+		for(int i=0;i<ntohs(dns_header->ans_count);i++)
+		{
+			for(int j=0 ; j<ntohs(answers[i].resource->data_len) ; j++)
+			{
+				answers[i].rdata[j]=reader[j];
+			}
 
-	//print answers
-	for(dest_size=0 ; dest_size < ntohs(dns_header->ans_count) ; dest_size++)
-    {
-		printf("Mail server: %s \n", answers[dest_size].rdata);
+			answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
+
+			reader = reader + ntohs(answers[i].resource->data_len);
+
+			long *p=(long*)answers[0].rdata;
+			dest.sin_addr.s_addr=(*p); 
+			printf("has IPv4 address : %s",inet_ntoa(dest.sin_addr));
+		}
 	}
+
+	return 0;
+
+	perror("Something gone wrong... Exiting");
+
+	exit(EXIT_FAILURE);
+	
+	// StartTelnet(answers[0].rdata);
 }
 
 unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count)
 {
 	unsigned char *name;
 	unsigned int p=0,jumped=0,offset;
-	int dest_size , j;
+	int dest_size;
 
 	*count = 1;
 	name = (unsigned char*)malloc(256);
@@ -224,7 +255,7 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 	for(dest_size=0;dest_size < (int)strlen((const char*)name);dest_size++) 
 	{
 		p=name[dest_size];
-		for(j=0;j < (int)p;j++) 
+		for(int j = 0;j < (int)p;j++) 
 		{
 			name[dest_size]=name[dest_size+1];
 			dest_size=dest_size+1;
@@ -284,3 +315,28 @@ void ChangetoDnsNameFormat(unsigned char* dns_header,unsigned char* host)
 	}
 	*dns_header++='\0';
 }
+// void StartTelnet(unsigned char* address)
+// {
+// 	char buf[65536];
+// 	char strbuf[100];
+// 	int nbytes;
+
+// 	struct sockaddr_in telnet_addr;
+// 	inet_ntoa(*(struct in_addr *)address);
+
+// 	telnet_addr.sin_family = AF_INET;
+// 	telnet_addr.sin_port = 25;
+// 	telnet_addr.sin_addr.s_addr = (struct in_addr_t*)address;
+
+// 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+// 	if(connect(sockfd, (struct sockaddr*)&telnet_addr, sizeof(telnet_addr)) < 0)
+// 	{
+// 		perror("Connection error");
+// 		exit(EXIT_FAILURE);
+// 	};
+
+// 	snprintf(strbuf, sizeof strbuf, "%s %s", "helo", address);
+
+// 	printf(strbuf);
+// }
