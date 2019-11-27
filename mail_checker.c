@@ -25,6 +25,7 @@ int dns_server_count = 0;
 unsigned char* ngethostbyname (unsigned char* , int);
 void ChangetoDnsNameFormat (unsigned char*,unsigned char*);
 unsigned char* ReadName (unsigned char*,unsigned char*,int*);
+unsigned char* ReadMail (unsigned char*,unsigned char*,int*);
 void get_dns_servers();
 void StartTelnet(unsigned char*);
 
@@ -90,7 +91,7 @@ int main( int argc , char *argv[])
 
 	ngethostbyname(hostname, MX);
 
-	// ngethostbyname(dns_response_email, A);
+	ngethostbyname(hostname, A);
 
 	return 0;
 }
@@ -166,19 +167,17 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 	answers[0].resource = (struct R_DATA*)(reader);
 	reader = reader + sizeof(struct R_DATA);
 
-
-	// debug reader, values are not copied to rdata from buffer, check ehy, find cause
-	answers[0].rdata = (unsigned char*)malloc(ntohs(answers[0].resource->data_len));
-
 	if (query_type == MX)
 	{
-		answers[0].rdata = ReadName(reader,buf,&stop);
-		reader = reader + stop;
+		answers[0].rdata = (unsigned char*)malloc(ntohs(answers[0].resource->data_len));
 
-		printf("Mail server: %s\n", answers[0].rdata);
+		reader = reader + stop;
+		answers[0].rdata = ReadMail(reader,buf,&stop);
+
+		printf("Mail: %s\n", answers[0].rdata);
 
 	    close(sockfd);
-		free(answers[0].name);
+		free(answers[0].rdata);
 
 		return answers[0].rdata;
 		// StartTelnet(server_address);
@@ -199,7 +198,7 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 
 			long *p=(long*)answers[0].rdata;
 			dest.sin_addr.s_addr=(*p); 
-			printf("has IPv4 address : %s",inet_ntoa(dest.sin_addr));
+			printf("IPv4 address : %s\n\n",inet_ntoa(dest.sin_addr));
 		}
 	}
 
@@ -212,13 +211,13 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 	// StartTelnet(answers[0].rdata);
 }
 
-unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count)
+unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* stop)
 {
 	unsigned char *name;
 	unsigned int p=0,jumped=0,offset;
 	int dest_size;
 
-	*count = 1;
+	*stop = 1;
 	name = (unsigned char*)malloc(256);
 
 	name[0]='\0';
@@ -241,14 +240,14 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 
 		if(jumped==0)
 		{
-			*count = *count + 1; //if we havent jumped to another location then we can count up
+			*stop = *stop + 1; //if we havent jumped to another location then we can stop up
 		}
 	}
 
 	name[p]='\0'; //string complete
 	if(jumped==1)
 	{
-		*count = *count + 1; //number of steps we actually moved forward in the packet
+		*stop = *stop + 1; //number of steps we actually moved forward in the packet
 	}
 
 	// convert 3www6google3com0 to www.google.com
@@ -265,6 +264,65 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* count
 
 	name[dest_size-1]='\0'; //remove the last dot
 	return name;
+}
+
+unsigned char* ReadMail(unsigned char* reader, unsigned char* buffer, int* stop)
+{
+	unsigned char *mail;
+	unsigned int p=0,jumped=0,offset;
+	int dest_size;
+
+	*stop = 1;
+	mail = (unsigned char*)malloc(256);
+
+	mail[0]='\0';
+
+	// read the names in 3www6google3com format
+	while(*reader!=0)
+	{
+		if(*reader >= 192)
+		{
+			offset = (*reader)*256 + *(reader+1) - 49152; //49152 = 11000000 00000000 ;)
+			reader = buffer + offset - 1;
+			jumped = 1; //we have jumped to another location so counting wont go up!
+		}
+		else
+		{
+			mail[p++]=*reader;
+		}
+
+		reader = reader+1;
+
+		if(jumped==0)
+		{
+			*stop = *stop + 1; //if we havent jumped to another location then we can stop up
+		}
+	}
+
+	mail[p]='\0'; //string complete
+	
+	if(jumped==1)
+	{
+		*stop = *stop + 1; //number of steps we actually moved forward in the packet
+	}
+
+		printf("%s\n", mail);
+
+	// convert 3www6google3com0 to www.google.com
+	for(dest_size=0;dest_size < (int)strlen((const char*)mail);dest_size++) 
+	{
+		p=mail[dest_size];
+		for(int j = 0;j < (int)p;j++) 
+		{
+			mail[dest_size]=mail[dest_size+1];
+			dest_size=dest_size+1;
+		}
+		mail[dest_size]='.';
+	}
+
+	mail[dest_size-1]='\0'; //remove the last dot
+
+	return mail;
 }
 
 /*
