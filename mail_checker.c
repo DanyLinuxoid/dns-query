@@ -11,6 +11,7 @@
 #include <netinet/in.h>
 #include <unistd.h>	//getpid
 #include <ctype.h>
+#include <stdbool.h>
 
 #define A 1 //IPv4
 #define MX 15 // mail 
@@ -89,7 +90,7 @@ int main( int argc , char *argv[])
 	printf("Enter Hostname to Lookup : ");
 	scanf("%sockfd" , hostname);
 
-	ngethostbyname(hostname, MX);
+	dns_response_email = ngethostbyname(hostname, MX);
 
 	ngethostbyname(hostname, A);
 
@@ -97,7 +98,7 @@ int main( int argc , char *argv[])
 }
 
 /*
- * Perform a DNS query by sending a packet
+ * Perform a DNS query by sending a packetp 
  * */
 unsigned char* ngethostbyname(unsigned char *host , int query_type)
 {
@@ -105,7 +106,7 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 	unsigned char *qname;
 	unsigned char *reader;
 
-	int sockfd;
+	int sockfd = 0;
 
 	struct DNS_ANSWER answers[20]; //the replies from the DNS server
 	struct sockaddr_in dest;
@@ -141,7 +142,10 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 	//point to the query portion
 	qname =(unsigned char*)&buf[sizeof(struct DNS_HEADER)];
 	
-	ChangetoDnsNameFormat(qname, host);
+	if(query_type == MX)
+	{
+		ChangetoDnsNameFormat(qname, host);
+	}	
 
 	dns_question =(struct DNS_QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; //fill it
 	dns_question->qtype = htons(query_type); 
@@ -157,19 +161,18 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 		printf("Error occured while receiving packet");
 	}
 
+	// TODO: why ip is not changing, values are passed correctly!
 	dns_header = (struct DNS_HEADER*) buf;
-
-	reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)) + sizeof(struct DNS_QUESTION)];
-
-	answers[0].name=ReadName(reader,buf,&stop);
-	reader = reader + stop;
-
-	answers[0].resource = (struct R_DATA*)(reader);
-	reader = reader + sizeof(struct R_DATA);
 
 	if (query_type == MX)
 	{
-		answers[0].rdata = (unsigned char*)malloc(ntohs(answers[0].resource->data_len));
+		reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)) + sizeof(struct DNS_QUESTION)];
+
+		answers[0].name=ReadName(reader,buf,&stop);
+		reader = reader + stop;
+
+		answers[0].resource = (struct R_DATA*)(reader);
+		reader = reader + sizeof(struct R_DATA);
 
 		reader = reader + stop;
 		answers[0].rdata = ReadMail(reader,buf,&stop);
@@ -177,29 +180,36 @@ unsigned char* ngethostbyname(unsigned char *host , int query_type)
 		printf("Mail: %s\n", answers[0].rdata);
 
 	    close(sockfd);
-		free(answers[0].rdata);
 
 		return answers[0].rdata;
 		// StartTelnet(server_address);
 	}
-
 	else if(query_type == A)
 	{
-		for(int i=0;i<ntohs(dns_header->ans_count);i++)
+		reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)) + sizeof(struct DNS_QUESTION)];
+
+		answers[0].name=ReadName(reader,buf,&stop);
+		reader = reader + stop;
+
+		answers[0].resource = (struct R_DATA*)(reader);
+		reader = reader + sizeof(struct R_DATA);
+
+		answers[0].rdata = (unsigned char*)malloc(ntohs(answers[0].resource->data_len));
+
+		for(int j=0 ; j<ntohs(answers[0].resource->data_len) ; j++)
 		{
-			for(int j=0 ; j<ntohs(answers[i].resource->data_len) ; j++)
-			{
-				answers[i].rdata[j]=reader[j];
-			}
-
-			answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
-
-			reader = reader + ntohs(answers[i].resource->data_len);
-
-			long *p=(long*)answers[0].rdata;
-			dest.sin_addr.s_addr=(*p); 
-			printf("IPv4 address : %s\n\n",inet_ntoa(dest.sin_addr));
+			answers[0].rdata[j]=reader[j];
 		}
+
+		answers[0].rdata[ntohs(answers[0].resource->data_len)] = '\0';
+
+		reader = reader + ntohs(answers[0].resource->data_len);
+
+		long *p;
+		p=(long*)answers[0].rdata;
+		dest.sin_addr.s_addr=(*p);
+		printf("IPv4 address : %s",inet_ntoa(dest.sin_addr));
+		free(answers[0].rdata);
 	}
 
 	return 0;
@@ -263,6 +273,7 @@ unsigned char* ReadName(unsigned char* reader, unsigned char* buffer, int* stop)
 	}
 
 	name[dest_size-1]='\0'; //remove the last dot
+
 	return name;
 }
 
@@ -274,8 +285,6 @@ unsigned char* ReadMail(unsigned char* reader, unsigned char* buffer, int* stop)
 
 	*stop = 1;
 	mail = (unsigned char*)malloc(256);
-
-	mail[0]='\0';
 
 	// read the names in 3www6google3com format
 	while(*reader!=0)
@@ -306,21 +315,14 @@ unsigned char* ReadMail(unsigned char* reader, unsigned char* buffer, int* stop)
 		*stop = *stop + 1; //number of steps we actually moved forward in the packet
 	}
 
-		printf("%s\n", mail);
-
 	// convert 3www6google3com0 to www.google.com
 	for(dest_size=0;dest_size < (int)strlen((const char*)mail);dest_size++) 
 	{
-		p=mail[dest_size];
-		for(int j = 0;j < (int)p;j++) 
+		if(!isprint(mail[dest_size]))
 		{
-			mail[dest_size]=mail[dest_size+1];
-			dest_size=dest_size+1;
+			mail[dest_size] = '.';
 		}
-		mail[dest_size]='.';
 	}
-
-	mail[dest_size-1]='\0'; //remove the last dot
 
 	return mail;
 }
