@@ -2,22 +2,26 @@
 #include <string.h>	// strlen
 #include <stdlib.h>	// malloc
 #include <sys/socket.h>	
-#include <arpa/inet.h>	// inet_addr , inet_ntoa , ntohs etc
+#include <arpa/inet.h>	// inet_addr, inet_ntoa, ntohs etc
 #include <netinet/in.h>
-#include <unistd.h>	// getpid
+#include <unistd.h>	// getpid, sleep
 #include <ctype.h> // isprint
 
 #define A 1 // ipv4
 #define MX 15 // mail 
+#define END 1 // end line
 
 int Stop;
 char Dns_Server[10][100];
+unsigned char Email_Site[100] = "gmail.com";
 
 unsigned char* ReadData (unsigned char*, unsigned char*);
-unsigned char* GetDnsInfo (unsigned char*, int);
+unsigned char* GetDnsInfo (unsigned char*, char*, int);
+int ReadBufferResponseCode(char*, char*, char*);
 void ChangetoDnsNameFormat (unsigned char*,unsigned char*);
 void GetDnsServerFromFile();
-void StartTelnet(char*, unsigned char*);
+void StartTelnet(char*, char*, char*);
+void CheckResponseCode(char*, char*, char*);
 
 //DNS header structure
 struct DNS_HEADER
@@ -69,27 +73,27 @@ struct R_DATA
 
 int main( int argc , char *argv[])
 {
-	unsigned char hostname[100];
+	char user_to_check[50];
 	unsigned char query_type[10];
-	unsigned char dns_response_email[50];
+	unsigned char dns_response_email_server[50];
 	void* data_to_free;
 
 	GetDnsServerFromFile();
 	
-	printf("Enter Hostname to Lookup: ");
-	scanf("%sockfd" , hostname);
+	printf("Enter Username to Lookup: ");
+	scanf("%sockfd", user_to_check);
 	printf("\n");
 
-	data_to_free = GetDnsInfo(hostname, MX);
-	strncpy((char*)dns_response_email, (const char*)data_to_free, sizeof(dns_response_email));
+	data_to_free = GetDnsInfo(Email_Site, NULL, MX);
+	strncpy((char*)dns_response_email_server, (const char*)data_to_free, sizeof(dns_response_email_server));
 	free(data_to_free);
 
-	GetDnsInfo(dns_response_email, A);
+	GetDnsInfo(dns_response_email_server, user_to_check, A);
 
 	return 0;
 }
 
-unsigned char* GetDnsInfo(unsigned char *host , int query_type)
+unsigned char* GetDnsInfo(unsigned char* email_info, char* user_to_check, int query_type)
 {
 	unsigned char buf[65536], *qname, *reader;
 
@@ -126,19 +130,19 @@ unsigned char* GetDnsInfo(unsigned char *host , int query_type)
 	// point to the query portion
 	qname =(unsigned char*)&buf[sizeof(struct DNS_HEADER)];
 	
-	ChangetoDnsNameFormat(qname, host);
+	ChangetoDnsNameFormat(qname, email_info);
 
-	dns_question =(struct DNS_QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; 
+	dns_question = (struct DNS_QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; 
 	dns_question->qtype = htons(query_type); 
 	dns_question->qclass = htons(1); 
 
-	if(sendto(sockfd,(char*)buf,sizeof(struct DNS_HEADER) + (strlen((const char*)qname)+1) + sizeof(struct DNS_QUESTION),0,(struct sockaddr*)&dest,dest_size) < 0)
+	if(sendto(sockfd,(char*)buf, sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct DNS_QUESTION), 0, (struct sockaddr*)&dest,dest_size) < 0)
 	{
 		perror("Error occured while sending packet");
 		exit(EXIT_FAILURE);
 	}
 
-	if(recvfrom(sockfd,(char*)buf , 65536 , 0 , (struct sockaddr *)&dest, (socklen_t *)&dest_size) < 0)
+	if(recvfrom(sockfd,(char*)buf, sizeof(buf), 0, (struct sockaddr *)&dest, (socklen_t *)&dest_size) < 0)
 	{
 		perror("Error occured while receiving packet");
 		exit(EXIT_FAILURE);
@@ -147,7 +151,7 @@ unsigned char* GetDnsInfo(unsigned char *host , int query_type)
 	dns_header = (struct DNS_HEADER*) buf;
 	reader = &buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname)) + sizeof(struct DNS_QUESTION)];
 
-	answers[0].name=ReadData(reader, buf);
+	answers[0].name = ReadData(reader, buf);
 	free(answers[0].name);
 	reader = reader + Stop;
 
@@ -157,9 +161,9 @@ unsigned char* GetDnsInfo(unsigned char *host , int query_type)
 	if (query_type == MX)
 	{
 		reader = reader + Stop;
-		answers[0].rdata = ReadData(reader,buf);
+		answers[0].rdata = ReadData(reader, buf);
 
-		printf("Mail: %s\n", answers[0].rdata);
+		printf("DNS mail server: %s\n", answers[0].rdata);
 
 	    close(sockfd);
 		return answers[0].rdata;
@@ -179,7 +183,7 @@ unsigned char* GetDnsInfo(unsigned char *host , int query_type)
 		dest.sin_addr.s_addr=(*p);
 
 		// Let's talk to server
-		StartTelnet(inet_ntoa(dest.sin_addr), host);
+		StartTelnet(inet_ntoa(dest.sin_addr), user_to_check, (char*)email_info);
 	}
 
 	return 0;
@@ -281,45 +285,145 @@ void ChangetoDnsNameFormat(unsigned char* dns_header,unsigned char* host)
 		}
 	}
 	*dns_header++='\0';
+
+	host[dest_size - 1] = '\0';
 }
 
-void StartTelnet(char* address, unsigned char* email_server)
+void StartTelnet(char* ip_address, char* user_to_check, char* email_server)
 {
-	char buf[65536];
-	char telnet_query[100];
-	int nbytes;
+	char* user;
+	user = (char*)malloc(sizeof(user_to_check) * (strlen(user_to_check)));
+	strncpy(user, user_to_check, sizeof(user_to_check) + END);
+
+	char server_greeting[100];
+	char rcpt_to[100];
+	char server_quit[10];
+	const char* mail_from = "mail from:<example@example.com>";
+	const char* next_row = "\r\n";
 
 	struct sockaddr_in telnet_addr;
 	telnet_addr.sin_family = AF_INET;
 	telnet_addr.sin_port = htons(25);
-	telnet_addr.sin_addr.s_addr = inet_addr((const char*)address);
+	telnet_addr.sin_addr.s_addr = inet_addr((const char*)ip_address);
 
-	int sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	char buf[65536];
 
 	printf("Connecting to email server...\n");
+	int sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if(connect(sockfd, (struct sockaddr*)&telnet_addr, (socklen_t)sizeof(telnet_addr)) < 0)
 	{
-		perror("Connection error");
+		perror("Connection error\n");            
+		exit(EXIT_FAILURE);
+	} 	 		
+	printf("\033[1;32m\nConnected to %s\033[0m\n", email_server, ip_address);
+
+	// Helo
+	snprintf((char*)server_greeting, strlen("HELO ") + strlen(email_server) + END, "%s%s", "HELO ", email_server);
+	// Rcpt to
+	snprintf((char*)rcpt_to, strlen("rcpt to:") + strlen(user_to_check) + strlen("<>") + strlen((const char*)Email_Site) + strlen("@") + END, "%s%s%s%s%s%s", "rcpt to:<", user_to_check, "@", Email_Site, ">");
+	// Quit
+	snprintf((char*)server_quit, strlen("QUIT") + END, "%s", "QUIT");
+	// Combine in buffer
+	snprintf((char*)buf, 2048, "%s\r\n%s\r\n%s\r\n%s\r\n", server_greeting, mail_from, rcpt_to, server_quit);
+
+	if(send(sockfd, (char*)buf, 2048, 0) < 0)
+	{
+		perror("Error occured while sending telnet query\n");
 		exit(EXIT_FAILURE);
 	}
-	else
+	
+	if(recv(sockfd, (char*)buf, 2048, MSG_WAITALL) < 0)
 	{
-		printf("\033[0;32m");
-		printf("Connected to %s with ip %s!\n", email_server, address);
-		printf("\033");
+		perror("Error occured while receiving telnet query\n");
+		exit(EXIT_FAILURE);
 	}
-	
-	// TODO: make query sending to work
-	
-	// if(sendto(sockfd,(char*)buf,sizeof(buf), 0, (struct sockaddr*)&address, strlen(address)) < 0)
-	// {
-	// 	perror("Error occured while sending telnet query");
-	// 	exit(EXIT_FAILURE);
-	// }
-	// if(recvfrom(sockfd,(char*)buf , 65536 , 0 , (struct sockaddr *)&dest, (socklen_t *)&dest_size) < 0)
-	// {
-	// 	perror("Error occured while receiving telnet query");
-	// 	exit(EXIT_FAILURE);
-	// }
+
 	close(sockfd);
+
+	ReadBufferResponseCode(buf, user_to_check, rcpt_to);
+	free(user);
+}
+
+int ReadBufferResponseCode(char* buf, char* user, char* email)
+{
+	int responseNumLength;
+	int line_number = 1;
+	int possible_end = 0;
+	int buf_length = strlen((char*)buf);
+	char firstThreeNums[3];
+	char line[buf_length];
+	char* p;
+	int j = 0;
+
+	for(int i = 0; i < buf_length; i++)
+	{
+		p = &buf[i];
+		line[i] = *p;
+		if(line_number == 4)
+		{
+			if(i < responseNumLength)
+			{
+				firstThreeNums[j] = line[i];
+				j++;
+
+				if(i == responseNumLength - 1)
+				{
+					firstThreeNums[j] = '\0';
+					CheckResponseCode(firstThreeNums, user, email);
+				}		
+			}
+		}
+
+		if(line[i] == '\r' || possible_end == 1)
+		{
+			if(line[i] == '\n' && possible_end == 1)
+			{
+				possible_end = 0;
+				line_number++;
+				if(line_number == 4)
+				{
+					responseNumLength = i + 4;
+				}
+			}
+			else
+			{
+				if(possible_end == 1)
+				{
+					possible_end = 0;
+				}
+				else
+				{
+					possible_end = 1;
+				}
+				
+			}
+		}
+	}
+
+	return 0;
+}
+
+void CheckResponseCode(char* code, char* user, char* mail_to_check)
+{
+	if(strcmp("553", code) == 0)
+	{
+		printf("\033[1;31mThe mail %s is not a valid RFC-5321 address, PLEASE USE ONLY username before '@' symbol!\033[0m\n", mail_to_check);
+		exit(-1);
+	}
+	else if(strcmp("550", code) == 0)
+	{
+		printf("User account %s does not exist on %s\n", user, Email_Site);
+	}
+	else if(strcmp("250", code) == 0)
+	{
+		printf("\033[0;32mUser %s exists on %s!\033[0m\n", user, Email_Site);
+	}
+	else if(strcmp("", code) == 0)
+	{
+		printf("No response code from server... \n", Email_Site);	
+	}
+	else	
+	{
+		printf("Unknown code %s response\n", code);
+	}
 }
