@@ -4,6 +4,7 @@
 #include <sys/socket.h> // sockets	
 #include <sys/types.h> // size_t etc.
 #include <sys/stat.h> // stat, fstat
+#include <sys/time.h> // socket timeout
 #include <arpa/inet.h>	// inet_addr, inet_ntoa, ntohs etc
 #include <netinet/in.h>
 #include <ctype.h> // isprint, isdigit, isalpha
@@ -23,7 +24,6 @@ unsigned int USER_PROVIDED_FLAG;
 unsigned int VERBOSITY_LEVEL; // 1, 2
 unsigned int READ_MAILS_FROM_FILE_FLAG;
 unsigned int CHECK_ONE_MAIL_FLAG;
-// unsigned int CONNECT_TO_EACH_SITES_MAIL_SERVER; // Do we want to connect to each sites server, that we want to check, or it is enough to do checks from single server
 unsigned int CHANGE_DEFAULT_DNS_SERVER_FLAG;
 
 // Only mandatory globals
@@ -108,12 +108,6 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state)
 		}
 		break;
 
-		// case 'c':
-		// {
-		// 	CONNECT_TO_EACH_SITES_MAIL_SERVER = 1; // Not implemented, used by default
-		// }
-		// break;
-
 		case 'd':
 		{
 			if(arg != NULL)
@@ -188,7 +182,6 @@ struct argp_option options[] =
 	{ 0, 'f', "[path to file]", 0, "Check every mail in format 'gmail.com' from file", 6 },
 	{ 0, 0, 0, 0, "Optional CL_Arguments:", 7 },
 	{ 0, 'd', "[IPv4 address]", 0, "Change default dns server", 7 },
-	// { 0, 'c', 0, 0, "Connect to each sites mail server", 7 },
 	{ "verbose", 'v', "[number]", 0, "Show debug info", 7 },
 	{ 0 }
 };
@@ -249,7 +242,7 @@ struct R_DATA
 int main(int argc, char *argv[])
 {
 	struct CL_Arguments CL_Arguments;
-	// Check for positions and mandatory CL_Arguments, last check before start
+	// Check for positions and mandatory CL_Arguments
 	if(argp_parse(&argp, argc, argv, 0, 0, &CL_Arguments) == 0)
 	{
 		if(strcmp(argv[1], "-u") != 0 ||
@@ -265,12 +258,23 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
-	// Reminder
-	printf("Reminder: This program is not checking, if user exists on website!\n");
+	printf("Reminder: This program is not checking, if user exists on website, only mail services!\n"); // Reminder
 	
-	// Get DNS server where to connect and send queries	
-	GetDnsServerFromFileOrSetDefault();
+	if(CHANGE_DEFAULT_DNS_SERVER_FLAG) // If user chose custom dns server, test connection to DNS server
+	{
+		char test[10] = "google.com";
 
+		strncpy(Dns_Server, CL_Arguments.desired_dns_server, sizeof(Dns_Server));
+		printf("DNS server: %s\n", Dns_Server);
+		printf("Testing connection...\n");
+		GetDnsInfo(test, MX);
+		printf("OK\n");
+	}
+	else
+	{
+		GetDnsServerFromFileOrSetDefault(); // Get DNS server where to connect and send queries	
+	}
+	
 	// Branching based on flags
 	if(READ_MAILS_FROM_FILE_FLAG) // User chose -f option
 	{
@@ -293,13 +297,19 @@ unsigned char* GetDnsInfo(unsigned char* email_info, int query_type)
 	struct DNS_ANSWER answers[20]; // The replies from the DNS server
 	struct DNS_HEADER *dns_header = NULL;
 	struct DNS_QUESTION *dns_question = NULL;
+	struct timeval timeval;
+	timeval.tv_sec = 5;
 	struct sockaddr_in dest;
 	dest.sin_family = AF_INET;
 	dest.sin_port = htons(53);
 	dest.sin_addr.s_addr = inet_addr(Dns_Server); // DNS_HEADER servers
 
 	int dest_size = sizeof(dest);
-	int sockfd = socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP); 
+	int sockfd = socket(AF_INET , SOCK_DGRAM, IPPROTO_UDP); 
+	if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeval, sizeof(timeval)) < 0) //  if timeout
+	{
+		perror("Error:");
+	}
 
 	// Set the DNS structure to standard queries
 	dns_header = (struct DNS_HEADER *)&buf;
@@ -444,9 +454,9 @@ void GetDnsServerFromFileOrSetDefault()
 // Converting www.google.com to DNS format 3www6google3com 
 void ChangeFormatToDNSFormat(unsigned char* dns_header, unsigned char* host) 
 {
+	strcat(host, ".");
 	unsigned int lock = 0;
 	size_t dest_size;
-	strcat((char*)host, ".");
 	for(dest_size = 0 ; dest_size < strlen((char*)host); dest_size++) 
 	{
 		if(host[dest_size]=='.') 
@@ -461,7 +471,6 @@ void ChangeFormatToDNSFormat(unsigned char* dns_header, unsigned char* host)
 	}
 
 	*dns_header++='\0';
-
 	host[dest_size - END] = '\0';
 }
 
@@ -477,6 +486,8 @@ void StartTelnet(char* ip_address, char* user_to_check, unsigned char* email_ser
 	telnet_addr.sin_family = AF_INET;
 	telnet_addr.sin_port = htons(25);
 	telnet_addr.sin_addr.s_addr = inet_addr((const char*)ip_address);
+	struct timeval timeval;
+	timeval.tv_sec = 1; // For telnet we can set bigger value
 
 	char buf[65536];
 	unsigned int max_size = 512;
@@ -487,8 +498,13 @@ void StartTelnet(char* ip_address, char* user_to_check, unsigned char* email_ser
 	PrintDebugInfoBasedOnVerbosityLevel("Server IPv4 :::: ", ip_address, 1);
 
 	// Start connection
-	int sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	PrintDebugInfoBasedOnVerbosityLevel("\nConnecting to email server :::: ", (char*)email_server, 1);
+	int sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeval, sizeof(timeval)) < 0) //  if timeout
+	{
+		perror("Error:");
+	}
+
 	if(connect(sockfd, (struct sockaddr*)&telnet_addr, (socklen_t)sizeof(telnet_addr)) < 0)
 	{
 		perror("Connection error\n");            
@@ -642,28 +658,32 @@ void CheckResponseCode(char* code, char* user, char* site)
 {
 	if(strcmp("553", code) == 0)
 	{
-		printf("\n\033[1;31mThe mail %s is not a valid RFC-5321 address, PLEASE USE ONLY USERNAME, and with valid characters!\033[0m\n\n", site);
+		printf("\033[1;31mThe mail %s is not a valid RFC-5321 address, PLEASE USE ONLY USERNAME, and with valid characters!\033[0m\n", site);
 		exit(1);
 	}
 	else if(strcmp("550", code) == 0)
 	{
-		printf("\n\033[0;31mUser account %s does not exist on %s\033[0m\n\n", user, site);
+		printf("\033[0;31mUser account %s does not exist on %s\033[0m\n", user, site);
 	}
 	else if(strcmp("250", code) == 0)
 	{
-		printf("\n\033[1;32mUser %s exists on %s!\033[0m\n\n", user, site);
+		printf("\033[1;32mUser %s exists on %s!\033[0m\n", user, site);
 	}
 	else if(strcmp("501", code) == 0)
 	{
-		printf("\n\033[1;31mInvalid argument in query, something went wrong, try to use verbose(2).\033[0m\n\n");
+		printf("\033[1;31mInvalid argument in query, something went wrong, try to use verbose(2).\033[0m\n");
 	}
 	else if(strcmp("221", code) == 0)
 	{
 		printf("Server closed connection\n");
 	}
+	else if(strcmp("555", code) == 0)
+	{
+		printf("Syntax error\n");
+	}
 	else 
 	{
-		printf("\n\033[0;31mUnknown response code %s.\033[0m\n\n", code);
+		printf("\n\033[0;31mUnknown response code %s.\033[0m\n", code);
 	}
 }
 
@@ -714,11 +734,12 @@ void CoreLogic(char* user_to_check, unsigned char* email_site)
 		char* destination_ip = (char*)GetDnsInfo(dns_response_email_server, A);
 
 		// Let's talk to server with information we got
-		// StartTelnet(destination_ip, user_to_check, (unsigned char*)dns_saved_email_server, (char*)email_site);
+		StartTelnet(destination_ip, user_to_check, (unsigned char*)dns_saved_email_server, (char*)email_site);
 	}
 	else
 	{
 		printf("Got bad response, MX record not found");
+
 	}
 }
 
