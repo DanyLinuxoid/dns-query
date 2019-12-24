@@ -487,7 +487,7 @@ void StartTelnet(char* ip_address, char* user_to_check, unsigned char* email_ser
 	telnet_addr.sin_port = htons(25);
 	telnet_addr.sin_addr.s_addr = inet_addr((const char*)ip_address);
 	struct timeval timeval;
-	timeval.tv_sec = 1; // For telnet we can set bigger value
+	timeval.tv_sec = 10; // For telnet we can set bigger value
 
 	char buf[65536];
 	unsigned int max_size = 512;
