@@ -1,6 +1,8 @@
 # mailchecker by DanyLinuxoid (daniklogan@gmail.com)
 
-Program checks if some mail exists via telneting to mail servers, program cannot check if user exists on websites, only mail services.
+Program checks if some mail exists via telneting to mail servers
+Program cannot check if user exists on websites, only mail services.
+Also capable to check from file with mail services.
 
 #Use this program carefully
 As overusing this program can led your IP to be in mail blacklist, use VPN/Dynamic IP etc.
