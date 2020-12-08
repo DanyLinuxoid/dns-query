@@ -1,4 +1,4 @@
-# mailchecker by DanyLinuxoid (daniklogan@gmail.com)
+# mailchecker
 
 Program checks if some mail exists via telneting to mail servers
 Program cannot check if user exists on websites, only mail services.
